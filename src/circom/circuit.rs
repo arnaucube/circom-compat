@@ -1,17 +1,27 @@
+use std::collections::HashMap;
+
 use ark_ff::PrimeField;
 use ark_relations::r1cs::{
     ConstraintSynthesizer, ConstraintSystemRef, LinearCombination, SynthesisError, Variable,
 };
 
-use super::R1CS;
-
 use color_eyre::Result;
 
+use super::R1CS;
+
+/// `self.public_inputs_indexes` stores already allocated public variables. We assume that:
+///      1. `self.public_inputs_indexes` is sorted in the same order as circom's r1cs public inputs
+///      2. the first element of `self.public_inputs_indexes` is the first element *after* the last non-allocated yet public input
+/// example:
+///      if circom public values are [1, out1, out2, in1, in2] (where out and in denote public signals only)
+///      and `self.public_inputs_indexes` is [Variable(2), Variable(3)]
+///      then we will allocate Variable(1), Variable(out1), Variable(out2) and consider that
+///      Variable(in1) and Variable(in2) are already allocated as Variable(2), Variable(3)
 #[derive(Clone, Debug)]
 pub struct CircomCircuit<F: PrimeField> {
     pub r1cs: R1CS<F>,
     pub witness: Option<Vec<F>>,
-    pub inputs_already_allocated: bool,
+    pub public_inputs_indexes: Vec<Variable>,
 }
 
 impl<F: PrimeField> CircomCircuit<F> {
@@ -31,58 +41,81 @@ impl<F: PrimeField> ConstraintSynthesizer<F> for CircomCircuit<F> {
         let witness = &self.witness;
         let wire_mapping = &self.r1cs.wire_mapping;
 
-        // Start from 1 because Arkworks implicitly allocates One for the first input
-        if !self.inputs_already_allocated {
-            for i in 1..self.r1cs.num_inputs {
-                cs.new_input_variable(|| {
-                    Ok(match witness {
-                        None => F::from(1u32),
-                        Some(w) => match wire_mapping {
-                            Some(m) => w[m[i]],
-                            None => w[i],
-                        },
-                    })
-                })?;
-            }
+        // Since our cs might already have allocated constraints,
+        // We store a mapping between circom's defined indexes and the newly obtained cs indexes
+        let mut circom_index_to_cs_index = HashMap::new();
+        let n_non_allocated_inputs = self.r1cs.num_inputs - self.public_inputs_indexes.len();
+
+        // allocate non-allocated inputs and update mapping
+        // !! today, we allocate everything as witnesses by default for compatibility with sonobe !!
+        for circom_public_input_index in 0..n_non_allocated_inputs {
+            circom_index_to_cs_index.insert(
+                circom_public_input_index,
+                Variable::Witness(cs.num_witness_variables()),
+            );
+            cs.new_witness_variable(|| {
+                Ok(match witness {
+                    None => F::from(1u32),
+                    Some(w) => match wire_mapping {
+                        Some(m) => w[m[circom_public_input_index]],
+                        None => w[circom_public_input_index],
+                    },
+                })
+            })?;
+        }
+
+        for circom_public_input_index in n_non_allocated_inputs..self.r1cs.num_inputs {
+            let access_input_index = circom_public_input_index - n_non_allocated_inputs;
+            circom_index_to_cs_index.insert(
+                circom_public_input_index,
+                self.public_inputs_indexes[access_input_index],
+            );
         }
 
         for i in 0..self.r1cs.num_aux {
+            let circom_defined_r1cs_index = i + self.r1cs.num_inputs;
+            circom_index_to_cs_index.insert(
+                circom_defined_r1cs_index,
+                Variable::Witness(cs.num_witness_variables()),
+            );
             cs.new_witness_variable(|| {
                 Ok(match witness {
                     None => F::from(1u32),
                     Some(w) => match wire_mapping {
                         Some(m) => w[m[i + self.r1cs.num_inputs]],
-                        None => w[i + self.r1cs.num_inputs],
+                        None => w[circom_defined_r1cs_index],
                     },
                 })
             })?;
         }
 
         let make_index = |index| {
-            if index < self.r1cs.num_inputs {
-                Variable::Instance(index)
-            } else {
-                Variable::Witness(index - self.r1cs.num_inputs)
-            }
+            let new_index = match circom_index_to_cs_index.get(&index) {
+                Some(i) => Ok(*i),
+                None => Err(SynthesisError::AssignmentMissing),
+            };
+            Ok(new_index?)
         };
+
         let make_lc = |lc_data: &[(usize, F)]| {
-            lc_data.iter().fold(
+            lc_data.iter().try_fold(
                 LinearCombination::<F>::zero(),
-                |lc: LinearCombination<F>, (index, coeff)| lc + (*coeff, make_index(*index)),
+                |lc: LinearCombination<F>, (index, coeff)| {
+                    let r1cs_index = make_index(*index);
+                    match r1cs_index {
+                        Ok(r1cs_index) => Ok(lc + (*coeff, r1cs_index)),
+                        Err(e) => Err(e),
+                    }
+                },
             )
         };
 
-        let skip = if self.inputs_already_allocated {
-            self.r1cs.num_inputs
-        } else {
-            0
-        };
-        for constraint in self.r1cs.constraints.iter().skip(skip) {
-            cs.enforce_constraint(
-                make_lc(&constraint.0),
-                make_lc(&constraint.1),
-                make_lc(&constraint.2),
-            )?;
+        for constraint in self.r1cs.constraints.iter() {
+            let a = make_lc(&constraint.0)?;
+            let b = make_lc(&constraint.1)?;
+            let c = make_lc(&constraint.2)?;
+            let res = cs.enforce_constraint(a, b, c);
+            res?
         }
 
         Ok(())
