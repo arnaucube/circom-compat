@@ -58,7 +58,7 @@ impl<F: PrimeField> CircomBuilder<F> {
         let mut circom = CircomCircuit {
             r1cs: self.cfg.r1cs.clone(),
             witness: None,
-            inputs_already_allocated: false,
+            public_inputs_indexes: vec![],
         };
 
         // Disable the wire mapping
