@@ -48,7 +48,6 @@ impl<F: PrimeField> ConstraintSynthesizer<F> for CircomCircuit<F> {
         let n_non_allocated_inputs = self.r1cs.num_inputs - self.public_inputs_indexes.len();
 
         // allocate non-allocated inputs and update mapping
-        // !! today, we allocate everything as witnesses by default for compatibility with sonobe !!
         for circom_public_input_index in 0..n_non_allocated_inputs {
             if circom_public_input_index == 0 {
                 circom_index_to_cs_index.insert(circom_public_input_index, Variable::One);
