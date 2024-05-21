@@ -22,6 +22,7 @@ pub struct CircomCircuit<F: PrimeField> {
     pub r1cs: R1CS<F>,
     pub witness: Option<Vec<F>>,
     pub public_inputs_indexes: Vec<Variable>,
+    pub allocate_inputs_as_witnesses: bool,
 }
 
 impl<F: PrimeField> CircomCircuit<F> {
@@ -49,19 +50,40 @@ impl<F: PrimeField> ConstraintSynthesizer<F> for CircomCircuit<F> {
         // allocate non-allocated inputs and update mapping
         // !! today, we allocate everything as witnesses by default for compatibility with sonobe !!
         for circom_public_input_index in 0..n_non_allocated_inputs {
-            circom_index_to_cs_index.insert(
-                circom_public_input_index,
-                Variable::Witness(cs.num_witness_variables()),
-            );
-            cs.new_witness_variable(|| {
-                Ok(match witness {
-                    None => F::from(1u32),
-                    Some(w) => match wire_mapping {
-                        Some(m) => w[m[circom_public_input_index]],
-                        None => w[circom_public_input_index],
-                    },
-                })
-            })?;
+            if circom_public_input_index == 0 {
+                circom_index_to_cs_index.insert(circom_public_input_index, Variable::One);
+                continue;
+            }
+
+            let variable = match self.allocate_inputs_as_witnesses {
+                true => {
+                    let witness_var = Variable::Witness(cs.num_witness_variables());
+                    cs.new_witness_variable(|| {
+                        Ok(match witness {
+                            None => F::from(1u32),
+                            Some(w) => match wire_mapping {
+                                Some(m) => w[m[circom_public_input_index]],
+                                None => w[circom_public_input_index],
+                            },
+                        })
+                    })?;
+                    witness_var
+                }
+                false => {
+                    let instance_var = Variable::Instance(cs.num_instance_variables());
+                    cs.new_input_variable(|| {
+                        Ok(match witness {
+                            None => F::from(1u32),
+                            Some(w) => match wire_mapping {
+                                Some(m) => w[m[circom_public_input_index]],
+                                None => w[circom_public_input_index],
+                            },
+                        })
+                    })?;
+                    instance_var
+                }
+            };
+            circom_index_to_cs_index.insert(circom_public_input_index, variable);
         }
 
         for circom_public_input_index in n_non_allocated_inputs..self.r1cs.num_inputs {

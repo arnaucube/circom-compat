@@ -59,6 +59,7 @@ impl<F: PrimeField> CircomBuilder<F> {
             r1cs: self.cfg.r1cs.clone(),
             witness: None,
             public_inputs_indexes: vec![],
+            allocate_inputs_as_witnesses: false,
         };
 
         // Disable the wire mapping
