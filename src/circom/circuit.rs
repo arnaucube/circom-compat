@@ -11,7 +11,7 @@ use super::R1CS;
 
 /// `self.public_inputs_indexes` stores already allocated public variables. We assume that:
 ///      1. `self.public_inputs_indexes` is sorted in the same order as circom's r1cs public inputs
-///      2. the first element of `self.public_inputs_indexes` is the first element *after* the last non-allocated yet public input
+///      2. the first element of `self.public_inputs_indexes` is the first element *after* the last non yet allocated public input
 /// example:
 ///      if circom public values are [1, out1, out2, in1, in2] (where out and in denote public signals only)
 ///      and `self.public_inputs_indexes` is [Variable(2), Variable(3)]
@@ -45,15 +45,15 @@ impl<F: PrimeField> ConstraintSynthesizer<F> for CircomCircuit<F> {
         // Since our cs might already have allocated constraints,
         // We store a mapping between circom's defined indexes and the newly obtained cs indexes
         let mut circom_index_to_cs_index = HashMap::new();
-        let n_non_allocated_inputs = self.r1cs.num_inputs - self.public_inputs_indexes.len();
+
+        // constant 1 at idx 0 is already allocated by arkworks
+        circom_index_to_cs_index.insert(0, Variable::One);
+
+        // length pub inputs - constant 1 (already allocated by arkworks) - length already allocated pub inputs
+        let n_non_allocated_inputs = self.r1cs.num_inputs - 1 - self.public_inputs_indexes.len();
 
         // allocate non-allocated inputs and update mapping
-        for circom_public_input_index in 0..n_non_allocated_inputs {
-            if circom_public_input_index == 0 {
-                circom_index_to_cs_index.insert(circom_public_input_index, Variable::One);
-                continue;
-            }
-
+        for circom_public_input_index in 1..=n_non_allocated_inputs {
             let variable = match self.allocate_inputs_as_witnesses {
                 true => {
                     let witness_var = Variable::Witness(cs.num_witness_variables());
@@ -85,13 +85,25 @@ impl<F: PrimeField> ConstraintSynthesizer<F> for CircomCircuit<F> {
             circom_index_to_cs_index.insert(circom_public_input_index, variable);
         }
 
-        for circom_public_input_index in n_non_allocated_inputs..self.r1cs.num_inputs {
-            let access_input_index = circom_public_input_index - n_non_allocated_inputs;
+        // update mapping with already allocated public inputs
+        for circom_public_input_index in (n_non_allocated_inputs + 1)..self.r1cs.num_inputs {
+            let access_input_index = circom_public_input_index - n_non_allocated_inputs - 1;
             circom_index_to_cs_index.insert(
                 circom_public_input_index,
                 self.public_inputs_indexes[access_input_index],
             );
         }
+
+        assert_eq!(
+            circom_index_to_cs_index.get(&0),
+            Some(&Variable::One),
+            "circom index 0 should be allocated as Variable::One"
+        );
+        assert_eq!(
+            circom_index_to_cs_index.len(),
+            self.r1cs.num_inputs,
+            "Did not map all inputs"
+        );
 
         for i in 0..self.r1cs.num_aux {
             let circom_defined_r1cs_index = i + self.r1cs.num_inputs;
@@ -149,6 +161,7 @@ mod tests {
     use crate::{CircomBuilder, CircomConfig};
     use ark_bn254::Fr;
     use ark_relations::r1cs::ConstraintSystem;
+    use num_bigint::BigInt;
 
     #[test]
     fn satisfied() {
@@ -165,5 +178,149 @@ mod tests {
         let cs = ConstraintSystem::<Fr>::new_ref();
         circom.generate_constraints(cs.clone()).unwrap();
         assert!(cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn no_public_inputs_allocated() {
+        let mut cfg = CircomConfig::<Fr>::new(
+            "./test-vectors/mycircuit2.wasm",
+            "./test-vectors/mycircuit2.r1cs",
+        )
+        .unwrap();
+
+        let inputs = vec![
+            ("a".to_string(), vec![BigInt::from(3)]),
+            ("b".to_string(), vec![BigInt::from(3)]),
+            ("c".to_string(), vec![BigInt::from(3)]),
+        ];
+
+        let witness = cfg.wtns.calculate_witness_element(inputs, true).unwrap();
+
+        // satisfy with inputs as instance variables
+        let mut circom = CircomCircuit {
+            r1cs: cfg.r1cs.clone(),
+            witness: Some(witness.clone()),
+            public_inputs_indexes: vec![],
+            allocate_inputs_as_witnesses: false,
+        };
+
+        let cs = ConstraintSystem::<Fr>::new_ref();
+        circom.clone().generate_constraints(cs.clone()).unwrap();
+        assert_eq!(cs.num_witness_variables(), 2);
+        assert_eq!(cs.num_instance_variables(), 5);
+        assert!(cs.is_satisfied().unwrap());
+
+        // satisfy with inputs as witness variables
+        let cs = ConstraintSystem::<Fr>::new_ref();
+        circom.allocate_inputs_as_witnesses = true;
+        circom.generate_constraints(cs.clone()).unwrap();
+
+        assert_eq!(cs.num_witness_variables(), 6);
+        assert_eq!(cs.num_instance_variables(), 1);
+        assert!(cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn all_public_inputs_allocated() {
+        let mut cfg = CircomConfig::<Fr>::new(
+            "./test-vectors/mycircuit2.wasm",
+            "./test-vectors/mycircuit2.r1cs",
+        )
+        .unwrap();
+
+        let inputs = vec![
+            ("a".to_string(), vec![BigInt::from(3)]),
+            ("b".to_string(), vec![BigInt::from(3)]),
+            ("c".to_string(), vec![BigInt::from(3)]),
+        ];
+
+        let witness = cfg.wtns.calculate_witness_element(inputs, true).unwrap();
+
+        // satisfy with inputs as instance variables
+        let mut circom = CircomCircuit {
+            r1cs: cfg.r1cs.clone(),
+            witness: Some(witness.clone()),
+            public_inputs_indexes: vec![],
+            allocate_inputs_as_witnesses: false,
+        };
+
+        let cs = ConstraintSystem::<Fr>::new_ref();
+
+        // allocate all public input variables (except 1) as instance variables and push their indexes
+        for i in 1..cfg.r1cs.num_inputs {
+            circom
+                .public_inputs_indexes
+                .push(Variable::Instance(cs.num_instance_variables()));
+            cs.new_input_variable(|| Ok(witness[i])).unwrap();
+        }
+
+        circom.clone().generate_constraints(cs.clone()).unwrap();
+
+        assert_eq!(cs.num_witness_variables(), 2);
+        assert_eq!(cs.num_instance_variables(), 5);
+        assert!(cs.is_satisfied().unwrap());
+    }
+
+    #[test]
+    fn some_public_inputs_allocated() {
+        let mut cfg = CircomConfig::<Fr>::new(
+            "./test-vectors/mycircuit2.wasm",
+            "./test-vectors/mycircuit2.r1cs",
+        )
+        .unwrap();
+
+        let inputs = vec![
+            ("a".to_string(), vec![BigInt::from(3)]),
+            ("b".to_string(), vec![BigInt::from(3)]),
+            ("c".to_string(), vec![BigInt::from(3)]),
+        ];
+
+        let witness = cfg.wtns.calculate_witness_element(inputs, true).unwrap();
+
+        // satisfy with inputs as instance variables
+        let mut circom = CircomCircuit {
+            r1cs: cfg.r1cs.clone(),
+            witness: Some(witness.clone()),
+            public_inputs_indexes: vec![],
+            allocate_inputs_as_witnesses: false,
+        };
+
+        let cs = ConstraintSystem::<Fr>::new_ref();
+
+        // allocate all some input variables as instance variables and push their indexes
+        // recall that it should start with the first non-allocated public input
+        for i in 3..cfg.r1cs.num_inputs {
+            circom
+                .public_inputs_indexes
+                .push(Variable::Instance(cs.num_instance_variables()));
+            cs.new_input_variable(|| Ok(witness[i])).unwrap();
+        }
+
+        circom.clone().generate_constraints(cs.clone()).unwrap();
+
+        assert_eq!(cs.num_witness_variables(), 2);
+        assert_eq!(cs.num_instance_variables(), 5);
+        assert!(cs.is_satisfied().unwrap());
+
+        // re-init and now satisfy with inputs as witness variables
+        let mut circom = CircomCircuit {
+            r1cs: cfg.r1cs.clone(),
+            witness: Some(witness.clone()),
+            public_inputs_indexes: vec![],
+            allocate_inputs_as_witnesses: false,
+        };
+
+        let cs = ConstraintSystem::<Fr>::new_ref();
+        for i in 3..cfg.r1cs.num_inputs {
+            circom
+                .public_inputs_indexes
+                .push(Variable::Instance(cs.num_instance_variables()));
+            cs.new_input_variable(|| Ok(witness[i])).unwrap();
+        }
+        circom.allocate_inputs_as_witnesses = true;
+        circom.generate_constraints(cs.clone()).unwrap();
+
+        assert_eq!(cs.num_witness_variables(), 4);
+        assert_eq!(cs.num_instance_variables(), 3);
     }
 }
