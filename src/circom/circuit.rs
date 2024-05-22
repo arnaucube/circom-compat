@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, f32::consts::E};
 
 use ark_ff::PrimeField;
 use ark_relations::r1cs::{
-    ConstraintSynthesizer, ConstraintSystemRef, LinearCombination, SynthesisError, Variable,
+    self, ConstraintSynthesizer, ConstraintSystemRef, LinearCombination, SynthesisError, Variable,
 };
 
 use color_eyre::Result;
@@ -94,16 +94,14 @@ impl<F: PrimeField> ConstraintSynthesizer<F> for CircomCircuit<F> {
             );
         }
 
-        assert_eq!(
+        match (
             circom_index_to_cs_index.get(&0),
-            Some(&Variable::One),
-            "circom index 0 should be allocated as Variable::One"
-        );
-        assert_eq!(
             circom_index_to_cs_index.len(),
-            self.r1cs.num_inputs,
-            "Did not map all inputs"
-        );
+        ) == (Some(&Variable::One), self.r1cs.num_inputs)
+        {
+            true => Ok(()),
+            false => Err(SynthesisError::Unsatisfiable),
+        }?;
 
         for i in 0..self.r1cs.num_aux {
             let circom_defined_r1cs_index = i + self.r1cs.num_inputs;
