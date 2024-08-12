@@ -1,8 +1,8 @@
-use std::{collections::HashMap, f32::consts::E};
+use std::collections::HashMap;
 
 use ark_ff::PrimeField;
 use ark_relations::r1cs::{
-    self, ConstraintSynthesizer, ConstraintSystemRef, LinearCombination, SynthesisError, Variable,
+    ConstraintSynthesizer, ConstraintSystemRef, LinearCombination, SynthesisError, Variable,
 };
 
 use color_eyre::Result;

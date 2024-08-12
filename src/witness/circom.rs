@@ -28,6 +28,7 @@ pub trait Circom {
     fn get_ptr_raw_prime(&self) -> Result<u32>;
 }
 
+#[cfg(feature = "circom-2")]
 pub trait Circom2 {
     fn get_field_num_len32(&self) -> Result<u32>;
     fn get_raw_prime(&self) -> Result<()>;
