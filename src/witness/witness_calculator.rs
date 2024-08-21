@@ -64,6 +64,12 @@ impl WitnessCalculator {
         Self::from_module(module)
     }
 
+    pub fn from_binary(bytes: impl AsRef<[u8]>) -> Result<Self> {
+        let store = Store::default();
+        let module = Module::new(&store, bytes)?;
+        Self::from_module(module)
+    }
+
     pub fn from_module(module: Module) -> Result<Self> {
         let store = module.store();
 
@@ -461,7 +467,9 @@ mod tests {
     }
 
     fn run_test(case: TestCase) {
-        let mut wtns = WitnessCalculator::new(case.circuit_path).unwrap();
+        let wasm_bytes = std::fs::read(case.circuit_path).expect("Error reading the file");
+        let mut wtns = WitnessCalculator::from_binary(wasm_bytes).unwrap();
+
         assert_eq!(
             wtns.memory.prime.to_str_radix(16),
             "30644E72E131A029B85045B68181585D2833E84879B9709143E1F593F0000001".to_lowercase()
